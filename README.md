@@ -12,6 +12,12 @@ This skill sets up a **split-browser architecture** to work around that:
 2. A human opens the noVNC link and manually performs the one un-automatable step (login).
 3. Claude then drives that *same, still-running* Chrome process via Playwright to navigate, scrape, or automate the site — without ever closing and reopening the browser, which is what triggers bot-management re-validation and kicks the session back to login.
 
+Because the login step happens through noVNC in a browser tab, the human side of the hand-off works from any device with a web browser, including phones and tablets — unlike Claude for Chrome, which is tied to a desktop Chrome extension.
+
+## Security considerations
+
+This approach has **not gone through a full security audit**, and that risk should be weighed before using it on anything sensitive. Access to the noVNC session is protected by Sprites' own authorization, but the browser session is still a real, authenticated window into whatever site the human logs into — anyone who can reach that noVNC URL (or the sandbox generally) reaches the live session, cookies, and saved `storageState.json` too. Treat the sandbox and its URL with the same care as the credentials being used inside it.
+
 ## Contents
 
 - [`SKILL.md`](SKILL.md) — the skill definition: when to trigger it and the full step-by-step workflow (provisioning the sandbox, installing dependencies, starting the Xvfb/x11vnc/noVNC stack, writing and launching the Playwright script, handing off to the human, and driving the browser afterward).
