@@ -135,23 +135,35 @@ Observed symptoms:
   failing to (re)start with no clear application-level error — worth
   checking disk space even if the error message doesn't mention it.
 
+The single biggest offender in practice: running the bare `npx playwright
+install` instead of `npx playwright install chrome`. The bare form
+downloads Chromium, Firefox, *and* WebKit (1GB+ combined) even though this
+skill only ever launches real Chrome — easy to do by habit if you've used
+Playwright outside this skill before. Always pass the browser name
+explicitly.
+
 **What to do — do not thrash on this:**
 1. Retry the one failing call once, in case it's a transient blip rather
    than the sprite actually being broken.
 2. If the sprite still responds at all, run `df -h` via `Sprites:exec` to
    confirm disk space is actually the cause (vs. e.g. a crash-looping
    service from pitfall #1).
-3. If it's confirmed (or the sprite doesn't respond well enough to check),
-   **stop and tell the user** plainly what's going on — don't keep retrying
-   installs or improvising cleanup commands hoping it resolves itself.
-4. Offer the user a choice: destroy the sprite and provision a fresh one
+3. If it's disk space and the sprite still responds to `Sprites:exec`, run
+   `references/cleanup.sh` before considering anything more drastic — it
+   clears apt/npm caches, unused Playwright browser downloads (see the
+   note below on the single biggest offender), and Chrome's own cache
+   dirs, none of which touch the live login session. This alone resolves
+   most disk-space cases. Retry the step that failed afterward.
+4. If cleanup doesn't help, or the sprite doesn't respond well enough to
+   run it, **stop and tell the user** plainly what's going on — don't keep
+   retrying installs hoping it resolves itself.
+5. Offer the user a choice: destroy the sprite and provision a fresh one
    (via `Sprites:destroy_sprite` then a new `Sprites:create_sprite` /
-   `mcp-`-prefixed sprite), or try to reclaim space in place (e.g. clearing
-   npm/apt caches) if they'd rather keep the current sprite and any state
-   on it. Destroying is usually faster and is the more reliable fix, but it
-   **discards any live login session** on that sprite, so don't do it
-   without the user's explicit go-ahead.
-5. After destroying and recreating, redo the environment install
+   `mcp-`-prefixed sprite), or keep troubleshooting the current one if
+   they'd rather preserve its state. Destroying is usually faster and is
+   the more reliable fix, but it **discards any live login session** on
+   that sprite, so don't do it without the user's explicit go-ahead.
+6. After destroying and recreating, redo the environment install
    (`references/install-deps.sh`) and the display/VNC services from
    scratch, and let the user know they'll need to log in again — there is
    no session to carry over from a destroyed sprite.

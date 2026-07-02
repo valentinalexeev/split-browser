@@ -43,9 +43,10 @@ Recognize this by: `Sprites:exec` calls hanging or erroring, `service_create`/`s
 When you hit this:
 1. Retry the failing call once in case it was a transient blip.
 2. If it still fails, check `df -h` via `Sprites:exec` (if the sprite responds at all) to confirm it's actually disk space rather than something else.
-3. **Stop and tell the user** the sprite looks unavailable/out of space rather than continuing to retry or improvise around it — this is not something to silently paper over.
-4. Offer to destroy the broken sprite and provision a fresh one, and explain that this loses any live login session/state on it (they'll need to log in again once the new sprite is up). Only call `Sprites:destroy_sprite` after the user confirms — it's destructive and irreversible.
-5. Once confirmed, destroy it, then start over from "Pick or create a Sprite" with a new `mcp-`-prefixed name.
+3. If it's disk space and the sprite still responds to `Sprites:exec`, try `references/cleanup.sh` first — it clears apt/npm/Playwright caches, unused Playwright browser downloads, and Chrome's own cache dirs without touching the login session, and often reclaims enough space on its own. Retry the failing step afterward.
+4. If cleanup doesn't help, or the sprite doesn't respond well enough to run it, **stop and tell the user** the sprite looks unavailable/out of space rather than continuing to retry or improvise around it — this is not something to silently paper over.
+5. Offer to destroy the broken sprite and provision a fresh one, and explain that this loses any live login session/state on it (they'll need to log in again once the new sprite is up). Only call `Sprites:destroy_sprite` after the user confirms — it's destructive and irreversible.
+6. Once confirmed, destroy it, then start over from "Pick or create a Sprite" with a new `mcp-`-prefixed name.
 
 See `references/troubleshooting.md` #7 for more detail.
 
@@ -57,6 +58,7 @@ In short, this installs:
 - `xvfb x11vnc novnc websockify` (virtual display + VNC + noVNC web client)
 - Playwright's Node package + **real Google Chrome** via `npx playwright install chrome` and `sudo ... npx playwright install-deps chromium` (system libs) — **do not rely on the bundled Chromium** (`chromium.launch()` default binary); real Chrome is meaningfully less likely to be flagged as automated.
 - `sudo` works passwordless on Sprites; when a command needs a specific `PATH` under `sudo`, pass it explicitly (`sudo env PATH=... npx ...`) since `sudo`'s default `PATH` may lack `npx`.
+- **Always install with an explicit browser name (`npx playwright install chrome`), never the bare `npx playwright install`** — the bare form silently downloads Chromium, Firefox, *and* WebKit (1GB+ combined) that this skill never uses, which is one of the more common ways a small sprite's disk fills up. See `references/cleanup.sh` if it's already happened.
 
 ### 3. Start the display/VNC stack as services
 
@@ -120,4 +122,4 @@ See `references/troubleshooting.md` for full detail. Summary:
 4. `sudo` on Sprites has a minimal `PATH` — pass `env PATH=...` explicitly when running `npx`/node-based tools under `sudo`.
 5. Real Chrome (`channel: 'chrome'`) + stripped automation flags beats bundled Chromium for avoiding "browser may not be secure", but does **not** by itself beat bot-management re-validation on process restart — that requires never restarting between login and use.
 6. `page.waitForTimeout` / any `page.*` call can throw if a navigation is in flight (very common right after an OAuth callback) — wrap in try/catch, don't let it kill the process.
-7. **Sprites can become unavailable or run out of disk space** (large Playwright/Chrome installs are a common trigger) — don't keep retrying blindly. Tell the user, and offer to destroy (`Sprites:destroy_sprite`) and recreate the sprite; only do so after they confirm, since it's destructive and discards any live session on it.
+7. **Sprites can become unavailable or run out of disk space** (large Playwright/Chrome installs are a common trigger) — don't keep retrying blindly. If the sprite still responds, try `references/cleanup.sh` to reclaim space first. If that doesn't fix it, tell the user and offer to destroy (`Sprites:destroy_sprite`) and recreate the sprite; only do so after they confirm, since it's destructive and discards any live session on it.
