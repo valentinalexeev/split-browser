@@ -186,3 +186,71 @@ fixed pixel-offset assumptions in scraping/screenshot code.
 it's a Chromium flag that specifically suppresses this "bad flags" banner.
 It's already in `references/playwright-template.js`; if you hand-roll a
 launch config instead of using the template, don't drop it.
+
+## 9. One-shot side-effecting actions launched as services (the most severe form of pitfall #1)
+
+This is pitfall #1 — auto-restart on exit — but with a much worse blast
+radius, and it has already happened in practice, so it gets its own entry.
+
+**What happened:** while automating a multi-step form on a live site
+(after human login), the individual steps were written as separate small
+scripts and, at some point, one of them — the final step that clicked the
+real "Save" button on a form — was launched with `Sprites:service_create`
+instead of `Sprites:exec`. Several other one-off debug/helper scripts
+(a login-check script, a couple of retry variants of it, a screenshot
+helper, a size-check helper) were also launched the same way over the
+course of the session, some of them surviving into the *next* session on
+the same reused sprite.
+
+Because `service_create` auto-restarts on any exit — including the script
+completing successfully — the "click Save" service didn't run once. It
+restarted **4 times**, each restart re-running the exact same script,
+meaning the real Save button on a real form got (or could have gotten)
+clicked multiple times. The concrete risk realized here was a duplicate
+booking record being created on the destination site — not a lost
+Playwright session or an overwritten local file (pitfall #1's other
+examples), but a live write against an external system that Sprites has
+no concept of and cannot roll back.
+
+**Why this differs from the rest of pitfall #1:** every other consequence
+of auto-restart described there is contained to the sprite itself (a
+relaunched Chrome, an overwritten script file, an inconsistent local
+cookie DB) and is recoverable by destroying/recreating the sprite. A
+re-run write against a real external site is not undone by destroying the
+sprite — the damage (if any) is already on the other system.
+
+**The fix — enforced as the "Hard rule" near the top of SKILL.md:**
+- One-shot scripts, *especially* ones that click something, submit a form,
+  or otherwise change state on the target site, must be run via
+  `Sprites:exec cmd: "node <file>.js"` (a single plain command), never via
+  a second `service_create`. Writing the file to disk via a
+  `service_create` heredoc is still fine — that's idempotent — only the
+  *execution* of a side-effecting script must not be a service.
+- This applies to every throwaway debug/step script, not just the "real"
+  final version — the login-check and helper scripts in this incident
+  were just as much a hazard as the Save-click script, since all of them
+  were configured to auto-restart indefinitely.
+- Treat any zombie service found on a reused sprite whose command touches
+  the target site (as opposed to just reading a local file) as a live
+  risk requiring immediate `Sprites:service_stop`, not as harmless
+  leftover clutter.
+
+**`Sprites:service_stop` is not reliably permanent.** In this incident,
+several services kept respawning roughly every 30 seconds *after* being
+stopped. There is no `service_delete`-equivalent tool available. The
+working mitigation was to redefine each offending service (same name,
+`Sprites:service_create` again) with a harmless no-op command such as
+`sleep infinity`, which breaks the restart loop without needing a delete
+capability. Don't assume a single `service_stop` call is the end of the
+story — always re-check `Sprites:service_list` afterward, and if a
+service is still listed as scheduled/restarting, apply the no-op
+redefinition.
+
+**Before declaring the incident resolved:** go check the actual target
+system (not just Sprites) for evidence of a duplicated action — in this
+case, confirming the trip's flight entry existed exactly once, not
+multiple times, before considering it safe. A quiet `Sprites:service_list`
+is not the same as confirmation that nothing happened. If any doubt
+remains about whether real duplicate side effects occurred, destroying and
+recreating the sprite (see #7) does not by itself fix or undo anything on
+the *external* site — only the verification step does.

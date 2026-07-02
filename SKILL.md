@@ -14,6 +14,21 @@ Many real websites cannot be logged into by a fully automated Playwright browser
 
 The fix is a **split-browser architecture**: run a real, visible Chrome on a Sprite, expose it over noVNC so the human can see and click into it from their own device to do the one un-automatable step (login), then have Claude drive that *same, still-running* browser process afterward for the actual automation/scraping. Never close and reopen the browser between login and use — that's what triggers re-validation and kicks the session back to login.
 
+## Hard rule: one-shot actions must never run as a service
+
+`Sprites:service_create` is for **long-running, idempotent processes only** — the display/VNC stack (`xvfb`, `x11vnc`, `novnc`) and the single continuous Playwright driver script (step 4 below). Everything else — filling a field, clicking a button, submitting a form, anything that does something once and is meant to be done — must run via `Sprites:exec`, never `service_create`. No exceptions, including for small throwaway scripts written while iterating on a multi-step flow.
+
+**Why this matters more than it sounds:** Sprites services auto-restart whenever their process exits, *including a normal, successful exit* (see `references/troubleshooting.md` #1). A one-shot script launched as a service doesn't run once — it silently re-runs on every restart, for as long as the service exists. If that script's job was "click Save" or "submit this form," each restart re-clicks Save / re-submits the form against the real, live site. This isn't hypothetical: a one-shot form-submission script was launched via `service_create`, auto-restarted 4 times, and came within one manual check of creating a duplicate real-world record (a duplicate trip booking).
+
+**The pattern to follow, including while debugging:**
+- If you need shell features (heredocs, `&&`) just to *write* a script to disk, `service_create` is fine for that — writing a file is idempotent, so re-writing the same content on a restart is harmless.
+- **Run** the resulting script with `Sprites:exec cmd: "node <file>.js"` (a single plain command, no shell features needed) — never with a second `service_create`. `Sprites:exec` executes once and is not supervised or restarted.
+- Where practical, also make the action itself idempotent (check whether it's already been done before doing it) as a second line of defense in case a script somehow runs more than once anyway.
+- If you ever find a side-effecting one-shot script running as a service (yours or left over from a prior session on a reused sprite), stop it immediately, then **verify the actual target system** for duplicated effects before considering things safe — Sprites looking quiet is not proof nothing happened.
+- `Sprites:service_stop` is not reliably permanent — a "stopped" service can still come back. Re-check `Sprites:service_list` afterward; if something keeps reappearing and there's no delete tool available, overwrite it via `service_create` (same name) with a harmless no-op command (e.g. `sleep infinity`) to neutralize it for good.
+
+See `references/troubleshooting.md` #9 for the full incident writeup.
+
 ## When to use
 
 - User wants to automate a site that requires Google/Microsoft/SSO login, passkeys, MFA, or a CAPTCHA.
@@ -30,7 +45,7 @@ The fix is a **split-browser architecture**: run a real, visible Chrome on a Spr
 ### 1. Pick or create a Sprite
 
 - List sprites (`Sprites:list_sprites`). If the user references "the sprite we used before" or names one, reuse it.
-- **If reusing an old sprite that has been used for lots of ad-hoc debugging, check `Sprites:service_list` first.** Old sprites accumulate zombie/auto-restarting services from previous sessions (see `references/troubleshooting.md` — this is the single biggest source of wasted time). If it looks messy (many stopped/failed services, unclear state), it is almost always faster to create a fresh sprite than to untangle it.
+- **If reusing an old sprite that has been used for lots of ad-hoc debugging, check `Sprites:service_list` first.** Old sprites accumulate zombie/auto-restarting services from previous sessions (see `references/troubleshooting.md` — this is the single biggest source of wasted time). Pay special attention to any zombie service whose command performs a real action on the target site rather than just reading local files — that's not harmless clutter, it's a live risk of repeating that action (see the hard rule above). If it looks messy (many stopped/failed services, unclear state), it is almost always faster to create a fresh sprite than to untangle it.
 - New sprite names **must start with `mcp-`** (e.g. `mcp-<purpose>-browser`).
 - `Sprites:exec` and `Sprites:service_logs` are the reliable ways to read output. `service_start`/`service_create`'s own streamed response often comes back empty even when the command worked — **always double check with `cat` over exec or `service_logs` after a short sleep**, don't trust an empty streamed response as "it did nothing."
 
@@ -84,6 +99,7 @@ Read `references/playwright-template.js`. Fill in the target URL and (if known) 
 - Navigate to the target URL/dashboard.
 - **Poll `page.url()` in a loop** (not `waitForNavigation`, which is fragile across OAuth redirect chains) until it no longer matches the login/OAuth pattern.
 - Once logged in, **stay in the same script** — poll again for the actual content to render (SPAs often show a shell page immediately after redirect, then fetch real data async), *then* save `storageState()`, scrape, screenshot.
+- If the task needs a write/side-effecting action (clicking Save, submitting a form, etc.), perform it here, inside this same running script — never as a separately launched one-shot service. See "Hard rule" above for why.
 - Wrap every `page.*` call after login in a `safe()` try/catch helper so a mid-flight navigation (very common right after OAuth callbacks) never throws an uncaught exception — an uncaught exception kills the process, and Sprites services **auto-restart on crash**, which relaunches a fresh Chrome and loses the live session (see pitfall below).
 - End with `await new Promise(() => {})` to keep the browser open indefinitely for further use, rather than closing it.
 
@@ -123,3 +139,4 @@ See `references/troubleshooting.md` for full detail. Summary:
 5. Real Chrome (`channel: 'chrome'`) + stripped automation flags beats bundled Chromium for avoiding "browser may not be secure", but does **not** by itself beat bot-management re-validation on process restart — that requires never restarting between login and use.
 6. `page.waitForTimeout` / any `page.*` call can throw if a navigation is in flight (very common right after an OAuth callback) — wrap in try/catch, don't let it kill the process.
 7. **Sprites can become unavailable or run out of disk space** (large Playwright/Chrome installs are a common trigger) — don't keep retrying blindly. If the sprite still responds, try `references/cleanup.sh` to reclaim space first. If that doesn't fix it, tell the user and offer to destroy (`Sprites:destroy_sprite`) and recreate the sprite; only do so after they confirm, since it's destructive and discards any live session on it.
+8. **Never launch a one-shot, side-effecting action (Save/Submit/Buy/Delete, form submissions) via `service_create`** — only via `Sprites:exec`. A one-shot script launched as a service gets silently re-run on every auto-restart, which can repeat a real write against the live site. `Sprites:service_stop` is also not reliably permanent — verify with `Sprites:service_list` afterward and overwrite with a no-op command if something keeps reappearing. See the "Hard rule" section above and `references/troubleshooting.md` #9.
