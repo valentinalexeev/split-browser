@@ -1,0 +1,115 @@
+# Troubleshooting
+
+Detailed version of the pitfalls summarized in SKILL.md, with the actual
+symptoms so you recognize them quickly.
+
+## 1. Sprites services auto-restart, and this causes real damage
+
+Services created with `Sprites:service_create` restart automatically when
+their process exits or is killed — including with a non-zero exit code, and
+including after you `pkill`'d the process yourself expecting it to just die.
+
+Observed failure modes:
+- A one-shot "write this file via heredoc" service, run once and forgotten,
+  gets auto-restarted much later (e.g. triggered by an unrelated `pkill -9`
+  elsewhere on the box) and **silently overwrites a file you'd since edited**,
+  reverting your script to an old version without any error.
+- A crashed Playwright script (uncaught exception → `process.exit(1)`) respawns
+  a brand new Chrome process on the same profile dir, which — combined with
+  pitfall #5 below — loses the live authenticated session even though the
+  disk-persisted profile still has *some* cookies.
+- Two Chrome processes end up pointed at the same `--user-data-dir`
+  simultaneously (one old zombie + one freshly launched), which can leave the
+  profile's cookie DB in an inconsistent state.
+
+**Mitigations:**
+- Use a fresh, unique `service_name` for each real attempt (`pw-nav`,
+  `pw-nav2`, `pw-final3`, ...) rather than reusing one name across edits —
+  makes it obvious in `Sprites:service_list` which one is actually current.
+- Before doing anything destructive (`pkill`, `rm -rf` a profile dir), check
+  `Sprites:service_list` for what's *supposed* to be running and explicitly
+  `Sprites:service_stop` each one first.
+- Never let your own script crash (see pitfall #6) — that's the trigger you
+  actually control.
+- If a sprite has accumulated a lot of one-off debugging services, it is
+  usually faster to spin up a fresh sprite (`mcp-` prefix required) than to
+  fully untangle it.
+
+## 2. `Sprites:exec`'s `cmd` is not shell-parsed
+
+`Sprites:exec cmd: "bash -c 'echo hi && echo bye'"` does **not** work — it
+gets split naively and fails with quoting errors, or silently no-ops. Simple
+commands like `cmd: "echo hi"`, `cmd: "node -v"`, `cmd: "sudo apt-get update"`
+work fine because they need no shell features.
+
+For anything needing `&&`, pipes, redirection, or heredocs, use
+`Sprites:service_create` with `cmd: "bash", args: ["-c", "<full script>"]` —
+that path *does* go through a real shell.
+
+## 3. Streamed responses from `service_create`/`service_start` are not reliable
+
+Calling `service_create`/`service_start` with a `duration` returns a stream of
+NDJSON events, but in practice this often comes back as just
+`{"type":"started"...} {"type":"complete"...}` with **no stdout/stderr lines
+at all**, even when the underlying command produced plenty of output and
+succeeded. Don't treat an empty stream as "nothing happened" or "it failed."
+
+**Always verify separately:**
+```
+Sprites:exec cmd: "cat /.sprite/logs/services/<service-name>.log"
+```
+after a short `sleep` (via another `Sprites:exec cmd: "sleep 5"` call, since
+Claude has no local `sleep`/wait primitive). `Sprites:service_logs` can also
+work but has shown the same "comes back empty even though there's content"
+behavior in the same session — `cat` over `exec` has been the most reliable.
+
+## 4. `sudo`'s PATH is minimal
+
+`sudo npx playwright install-deps chromium` → `sudo: npx: command not found`,
+even though `npx` works fine unprivileged. Fix: pass PATH explicitly,
+e.g. `sudo env PATH=/home/sprite/.local/bin:/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin npx ...`
+(check `which npx` first to get the real path components on that sprite).
+
+## 5. Bot-management re-validates sessions on browser process restart
+
+This is the core "gotcha" of the whole approach, worth over-explaining:
+
+Sites protected by Akamai Bot Manager (and similar — Cloudflare, PerimeterX)
+set cookies (e.g. `_abck`, `bm_sv`, `bm_sz` for Akamai) that are tied to a
+*live* browser/TLS fingerprint session, not just to the cookie *values*.
+Symptoms actually observed:
+- Login succeeds, `page.url()` correctly shows the logged-in dashboard.
+- Stop the browser service, restart it pointed at the **same persistent
+  profile directory** (same cookies on disk) → immediately after
+  `page.goto()`, it briefly shows logged in, but within a few seconds of
+  the SPA's background API calls, it silently redirects back to the login
+  page.
+- Exporting `context.storageState()` and injecting those exact cookies into
+  a **brand new** `browser.newContext({ storageState: ... })` (even a fresh
+  real-Chrome instance) → immediately redirected to login. Cookie values
+  alone are not sufcient.
+
+**The only reliable pattern found:** do the entire login-wait → confirm →
+extract sequence in one continuous script execution, in the same Chrome
+process the whole time, and never close/restart it in between. Treat the
+live browser window as a stateful resource you hand off to the human once,
+not as something you tear down and recreate.
+
+If you genuinely need multi-day persistence beyond a single session, the
+practical answer is not cookie/storageState replay — it's registering a
+resident WebAuthn passkey for that Chrome profile (via
+`CDP WebAuthn.addVirtualAuthenticator`) so future logins in that *same*
+profile can authenticate without a human, though this still doesn't fully
+sidestep bot-management re-validation on its own; it only removes the
+human-input requirement, not the "don't restart Chrome" requirement.
+
+## 6. Uncaught exceptions mid-script are common right after OAuth callbacks
+
+`page.evaluate(...)` and similar right after a redirect can throw
+`Execution context was destroyed, most likely because of a navigation` — this
+is normal, not a bug, because the OAuth callback chain triggers several
+navigations in quick succession. Left uncaught, this exception propagates,
+the script's outer `.catch()` calls (or previously called) `process.exit(1)`,
+and the Sprites service auto-restart (pitfall #1) then loses your live
+session. Wrap every post-login `page.*` call in the `safe()` helper from the
+template.
