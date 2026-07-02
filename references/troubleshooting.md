@@ -155,3 +155,22 @@ Observed symptoms:
    (`references/install-deps.sh`) and the display/VNC services from
    scratch, and let the user know they'll need to log in again — there is
    no session to carry over from a destroyed sprite.
+
+## 8. "Unsupported command-line flag: --no-sandbox" banner
+
+Chrome shows a banner across the top of the window reading "You are using
+an unsupported command-line flag: --no-sandbox. Stability and security will
+suffer." whenever it's launched with `--no-sandbox` on its own. `--no-sandbox`
+is required here because the sprite's container environment doesn't support
+Chrome's own setuid/namespace sandbox, so this banner would show on every
+launch by default.
+
+It's visible to the human over noVNC (distracting, and can read as
+suspicious/unprofessional if this is ever shown to someone unfamiliar with
+the setup) and it also shifts the page content down, which can throw off
+fixed pixel-offset assumptions in scraping/screenshot code.
+
+**Fix:** add `--test-type` alongside `--no-sandbox` in the launch `args` —
+it's a Chromium flag that specifically suppresses this "bad flags" banner.
+It's already in `references/playwright-template.js`; if you hand-roll a
+launch config instead of using the template, don't drop it.

@@ -77,6 +77,7 @@ Read `references/playwright-template.js`. Fill in the target URL and (if known) 
 
 **The template's structure is the load-bearing part of this whole skill:**
 - Launch via `chromium.launchPersistentContext(userDataDir, { channel: 'chrome', headless: false, ignoreDefaultArgs: ['--enable-automation'], args: [...] })` — real Chrome, automation flag stripped, `--disable-blink-features=AutomationControlled`.
+- `--no-sandbox` is required for Chrome to launch inside the sprite, but by itself makes Chrome show an "unsupported command-line flag: --no-sandbox" banner across the top of the window — pair it with `--test-type`, which suppresses that specific banner.
 - `context.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }))`.
 - Navigate to the target URL/dashboard.
 - **Poll `page.url()` in a loop** (not `waitForNavigation`, which is fragile across OAuth redirect chains) until it no longer matches the login/OAuth pattern.

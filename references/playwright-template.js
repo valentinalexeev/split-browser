@@ -34,6 +34,11 @@ const MIN_CONTENT_LEN = 300;                    // tune per site: how long body.
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--no-sandbox',
+      // --no-sandbox on its own makes Chrome show a "You are using an
+      // unsupported command-line flag: --no-sandbox" banner across the top
+      // of the window (visible to the human over noVNC, and it shifts page
+      // layout under it). --test-type suppresses that specific banner.
+      '--test-type',
       '--disable-blink-features=AutomationControlled',
       '--start-maximized',
       '--window-position=0,0',
