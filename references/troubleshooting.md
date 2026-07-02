@@ -113,3 +113,45 @@ the script's outer `.catch()` calls (or previously called) `process.exit(1)`,
 and the Sprites service auto-restart (pitfall #1) then loses your live
 session. Wrap every post-login `page.*` call in the `safe()` helper from the
 template.
+
+## 7. The sprite itself can become unavailable or run out of disk space
+
+A sprite is a real VM with a finite disk, and this setup installs several
+hundred MB onto it (Node modules, real Chrome, Chrome's system deps via
+`playwright install-deps`). On a small sprite, or one that's accumulated
+multiple Chrome/Node installs across debugging attempts, this can genuinely
+fill the disk. Separately, a sprite can also just stop responding for
+unrelated infra reasons.
+
+Observed symptoms:
+- `Sprites:exec` calls hang indefinitely or return an error instead of
+  output.
+- `Sprites:service_create` / `Sprites:service_start` fail to bring services
+  up, or the services immediately crash-loop.
+- Command output (from `npm install`, `npx playwright install chrome`, or
+  even simple file writes) contains `ENOSPC`, `No space left on device`, or
+  `write failed`.
+- `Xvfb`/`x11vnc`/`novnc` services that were previously healthy start
+  failing to (re)start with no clear application-level error — worth
+  checking disk space even if the error message doesn't mention it.
+
+**What to do — do not thrash on this:**
+1. Retry the one failing call once, in case it's a transient blip rather
+   than the sprite actually being broken.
+2. If the sprite still responds at all, run `df -h` via `Sprites:exec` to
+   confirm disk space is actually the cause (vs. e.g. a crash-looping
+   service from pitfall #1).
+3. If it's confirmed (or the sprite doesn't respond well enough to check),
+   **stop and tell the user** plainly what's going on — don't keep retrying
+   installs or improvising cleanup commands hoping it resolves itself.
+4. Offer the user a choice: destroy the sprite and provision a fresh one
+   (via `Sprites:destroy_sprite` then a new `Sprites:create_sprite` /
+   `mcp-`-prefixed sprite), or try to reclaim space in place (e.g. clearing
+   npm/apt caches) if they'd rather keep the current sprite and any state
+   on it. Destroying is usually faster and is the more reliable fix, but it
+   **discards any live login session** on that sprite, so don't do it
+   without the user's explicit go-ahead.
+5. After destroying and recreating, redo the environment install
+   (`references/install-deps.sh`) and the display/VNC services from
+   scratch, and let the user know they'll need to log in again — there is
+   no session to carry over from a destroyed sprite.

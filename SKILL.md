@@ -1,6 +1,6 @@
 ---
 name: split-browser
-description: "Sets up a cloud browser on a Sprite (Sprites.dev) that a human watches/controls via noVNC to manually complete OAuth/Google/SSO logins, CAPTCHAs, MFA or passkeys that Claude cannot do itself, after which Claude drives that SAME already-authenticated Chrome via Playwright to navigate, scrape, or automate the site. Use whenever the user wants to automate a site behind a human-required login step (sign in with Google/Microsoft/SSO, MFA, passkeys, CAPTCHA), build a 'split browser' / human-in-the-loop setup, watch a remote automated browser live, or work around 'this browser may not be secure' / bot-detection errors from a headless or vanilla-Playwright browser. Also trigger when the user mentions Sprites + Playwright + noVNC, or wants to reuse/extend a prior browser-automation-on-a-sprite setup, or just says 'log into X for me' / 'automate X, it needs Google login'."
+description: "Sets up a cloud browser on a Sprite (Sprites.dev) that a human watches/controls via noVNC to manually complete OAuth/Google/SSO logins, CAPTCHAs, MFA or passkeys that Claude cannot do itself, after which Claude drives that SAME already-authenticated Chrome via Playwright to navigate, scrape, or automate the site. Use whenever the user wants to automate a site behind a human-required login step (sign in with Google/Microsoft/SSO, MFA, passkeys, CAPTCHA), build a 'split browser' / human-in-the-loop setup, watch a remote automated browser live, or work around 'this browser may not be secure' / bot-detection errors from a headless or vanilla-Playwright browser. Also trigger when the user mentions Sprites + Playwright + noVNC, or wants to reuse/extend a prior browser-automation-on-a-sprite setup, or just says 'log into X for me' / 'automate X, it needs Google login', or when a sprite from a prior run of this skill has become unresponsive or is reporting it's out of disk space."
 ---
 
 # Sprite Browser + noVNC Human-in-the-Loop OAuth
@@ -33,6 +33,21 @@ The fix is a **split-browser architecture**: run a real, visible Chrome on a Spr
 - **If reusing an old sprite that has been used for lots of ad-hoc debugging, check `Sprites:service_list` first.** Old sprites accumulate zombie/auto-restarting services from previous sessions (see `references/troubleshooting.md` — this is the single biggest source of wasted time). If it looks messy (many stopped/failed services, unclear state), it is almost always faster to create a fresh sprite than to untangle it.
 - New sprite names **must start with `mcp-`** (e.g. `mcp-<purpose>-browser`).
 - `Sprites:exec` and `Sprites:service_logs` are the reliable ways to read output. `service_start`/`service_create`'s own streamed response often comes back empty even when the command worked — **always double check with `cat` over exec or `service_logs` after a short sleep**, don't trust an empty streamed response as "it did nothing."
+
+#### If the sprite is unavailable or broken
+
+A sprite can stop responding or fill up its disk mid-task — the Chrome + Playwright install alone is several hundred MB, and a small sprite disk can genuinely run out of space during `npm install` or `npx playwright install chrome`, which then breaks everything after it (services fail to start, files fail to write, etc.).
+
+Recognize this by: `Sprites:exec` calls hanging or erroring, `service_create`/`service_start` failing outright, or command output containing `ENOSPC` / `No space left on device` / `write failed`.
+
+When you hit this:
+1. Retry the failing call once in case it was a transient blip.
+2. If it still fails, check `df -h` via `Sprites:exec` (if the sprite responds at all) to confirm it's actually disk space rather than something else.
+3. **Stop and tell the user** the sprite looks unavailable/out of space rather than continuing to retry or improvise around it — this is not something to silently paper over.
+4. Offer to destroy the broken sprite and provision a fresh one, and explain that this loses any live login session/state on it (they'll need to log in again once the new sprite is up). Only call `Sprites:destroy_sprite` after the user confirms — it's destructive and irreversible.
+5. Once confirmed, destroy it, then start over from "Pick or create a Sprite" with a new `mcp-`-prefixed name.
+
+See `references/troubleshooting.md` #7 for more detail.
 
 ### 2. Install the environment (once per sprite)
 
@@ -104,3 +119,4 @@ See `references/troubleshooting.md` for full detail. Summary:
 4. `sudo` on Sprites has a minimal `PATH` — pass `env PATH=...` explicitly when running `npx`/node-based tools under `sudo`.
 5. Real Chrome (`channel: 'chrome'`) + stripped automation flags beats bundled Chromium for avoiding "browser may not be secure", but does **not** by itself beat bot-management re-validation on process restart — that requires never restarting between login and use.
 6. `page.waitForTimeout` / any `page.*` call can throw if a navigation is in flight (very common right after an OAuth callback) — wrap in try/catch, don't let it kill the process.
+7. **Sprites can become unavailable or run out of disk space** (large Playwright/Chrome installs are a common trigger) — don't keep retrying blindly. Tell the user, and offer to destroy (`Sprites:destroy_sprite`) and recreate the sprite; only do so after they confirm, since it's destructive and discards any live session on it.
