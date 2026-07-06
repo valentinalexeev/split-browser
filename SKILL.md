@@ -43,6 +43,39 @@ rejected — see that file for why) with real measured footprint and
 OS-specific gotchas. Come back to this main flow only if the lightweight
 variant actually gets blocked by something stronger.
 
+## Checkpoint-first workflow (check this before provisioning anything)
+
+Before creating a new sprite and running through install steps, check whether
+a checkpointed sprite already exists for the purpose at hand — restoring a
+checkpoint takes seconds; a fresh Chrome/Firefox provision takes 1-3 minutes
+and re-downloads 100-300 MB every time.
+
+1. Check memory / prior conversation for a sprite name + checkpoint ID matching
+   the task (login-flow browser vs. headless Chromium-shell). Anthropic's
+   memory system is the source of truth here, since `Sprites:list_sprites`
+   has been observed returning an empty list while `Sprites:create_sprite`
+   simultaneously reports the account's sprite quota as full — the API's
+   listing is not reliable, don't trust an empty result as "no sprites exist."
+2. If a matching sprite+checkpoint is known, restore it (`Sprites:checkpoint_restore`)
+   instead of provisioning from scratch.
+3. Only provision a new sprite when no suitable checkpoint exists, or the
+   checkpointed one no longer responds (see "If the sprite is unavailable or
+   broken" above — try that recovery path first, including on a checkpoint
+   restore that comes back wedged).
+4. After any successful provisioning + cleanup, immediately
+   `Sprites:checkpoint_create` with a comment describing what's installed and
+   how to launch it (browser variant, launch args, NODE_PATH if relevant).
+   Then record the sprite name, purpose, and checkpoint ID somewhere durable
+   (ask the person if it should go into Claude's memory) so the next session
+   can skip straight to step 2 instead of rediscovering this from scratch.
+
+`Sprites:checkpoint_restore` restores a checkpoint onto the *same* sprite it
+was created on — there is no "spin up a new sprite from this checkpoint"
+operation. That makes long-lived, purpose-named sprites (not one-off names
+per task) the right pattern here: keep `mcp-scrape-chromium` and a
+login-capable `mcp-<site>-browser` around and restore/reuse them, rather than
+creating and destroying a fresh sprite per conversation.
+
 ## Prerequisites
 
 - Sprites MCP tools available (`Sprites:*`). If not connected, tell the user this skill needs the Sprites connector.
