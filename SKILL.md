@@ -35,6 +35,14 @@ See `references/troubleshooting.md` #9 for the full incident writeup.
 - User hits "this browser may not be secure" or gets silently logged out after Claude reconnects.
 - User asks to reuse a previous Sprite/Playwright/noVNC setup, or explicitly names this pattern.
 
+**If no login is involved** — just scraping a JS-rendered page behind mild
+bot-detection (Qrator, basic UA checks) — skip the whole VNC/display stack
+below and read `references/lightweight-no-login.md` instead. It covers a
+headless-only Chromium `--only-shell` variant (Firefox was tried and
+rejected — see that file for why) with real measured footprint and
+OS-specific gotchas. Come back to this main flow only if the lightweight
+variant actually gets blocked by something stronger.
+
 ## Prerequisites
 
 - Sprites MCP tools available (`Sprites:*`). If not connected, tell the user this skill needs the Sprites connector.
