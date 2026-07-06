@@ -1,6 +1,6 @@
 // Template for a single, continuous, crash-resistant browser session:
 // launch -> wait for human to log in via noVNC -> wait for real content to
-// render -> save state + extract -> stay alive.
+// render -> save state + extract -> stay alive AND stay reachable.
 //
 // Fill in the four placeholders marked with {{ }} before writing this to
 // the sprite. Everything else should generally be left as-is; it encodes
@@ -10,6 +10,16 @@
 // (bash -c "cat > /home/sprite/pw/<name>.js << 'EOF' ... EOF"), then run it
 // with its own Sprites:service_create: cmd="bash",
 // args=["-c","DISPLAY=:99 node /home/sprite/pw/<name>.js"], needs=["xvfb"].
+//
+// CDP_PORT below is what makes this reusable across a conversation: once
+// the human has logged in and this process is sitting in KEEP_ALIVE, a
+// SEPARATE small script (references/login-control-template.js) can attach
+// to this same running Chrome via `chromium.connectOverCDP` and open new
+// tabs / drive further actions in the SAME authenticated context — without
+// ever restarting this process. Never restart this launcher once logged in
+// (see "never restart mid-session" in SKILL.md); if you need to do
+// something new later in the conversation, write a new control-script call
+// against the existing CDP port instead of relaunching this file.
 
 const { chromium } = require('playwright');
 
@@ -24,6 +34,7 @@ async function safe(fn, fallback) {
 const TARGET_URL = '{{TARGET_URL}}';           // e.g. 'https://www.example.com/app/dashboard'
 const LOGIN_URL_MARKER = '{{LOGIN_URL_MARKER}}'; // substring only present in the URL when logged OUT, e.g. '/account/login'
 const MIN_CONTENT_LEN = 300;                    // tune per site: how long body.innerText is once real content (not just the SPA shell) has loaded
+const CDP_PORT = 9222;                          // pick a distinct port per site if running multiple login-browsers on one sprite
 
 (async () => {
   const userDataDir = '/home/sprite/pw/chrome-profile';
@@ -44,6 +55,8 @@ const MIN_CONTENT_LEN = 300;                    // tune per site: how long body.
       '--window-position=0,0',
       '--window-size=1280,800',
       '--disable-infobars',
+      `--remote-debugging-port=${CDP_PORT}`,
+      '--remote-debugging-address=127.0.0.1',
     ],
   });
   await context.addInitScript(() => {
@@ -55,7 +68,7 @@ const MIN_CONTENT_LEN = 300;                    // tune per site: how long body.
 
   console.log('WAITING_FOR_LOGIN');
   let loggedIn = false;
-  for (let i = 0; i < 300; i++) { // up to 10 minutes
+  for (let i = 0; i < 600; i++) { // up to 20 minutes — real logins (2FA, SSO redirects, a human getting to the noVNC tab) routinely take longer than 10
     await safe(() => page.waitForTimeout(2000));
     const url = page.url();
     if (url && !url.includes(LOGIN_URL_MARKER) && !url.includes('accounts.google.com')) {
@@ -66,6 +79,15 @@ const MIN_CONTENT_LEN = 300;                    // tune per site: how long body.
   console.log('LOGIN_DETECTED:', loggedIn);
   if (!loggedIn) {
     console.log('TIMEOUT_NO_LOGIN');
+    // This does NOT mean give up on the browser — CDP_PORT is still open and
+    // the human may simply still be mid-login (2FA, an SSO hop, or just
+    // slow to get to the noVNC tab). Confirmed in practice: a real session
+    // logged in successfully a few minutes after this loop gave up, and
+    // login-control-template.js / a quick diagnostic connect still worked
+    // fine against the live browser. If this fires, don't restart — instead
+    // write a small diagnostic control script (see login-control-template.js)
+    // to check `context.pages()[0].url()` and see if login actually
+    // succeeded after the fact before concluding it failed.
     await new Promise(() => {}); // stay alive so the human can retry without losing the window
     return;
   }
@@ -102,8 +124,13 @@ const MIN_CONTENT_LEN = 300;                    // tune per site: how long body.
 
   // --- Add further scraping/automation HERE, inside this same process,  ---
   // --- rather than in a script you launch later. Keep wrapping in safe(). ---
+  // --- For actions that come up LATER in the conversation (after this   ---
+  // --- process has already settled into KEEP_ALIVE), don't touch this   ---
+  // --- process at all — write and run a separate control script against ---
+  // --- CDP_PORT instead. See references/login-control-template.js.      ---
 
   console.log('KEEP_ALIVE');
+  console.log('CDP_PORT:', CDP_PORT);
   await new Promise(() => {}); // never resolves: keeps Chrome + the login session open
 })().catch((e) => {
   // Deliberately NOT process.exit(1) here — an exit triggers Sprites'

@@ -156,8 +156,9 @@ repeated with short sleeps, until you see the script's own `LOGIN_DETECTED: true
 ### 5. After login: keep driving the SAME process
 
 - Do **not** stop and relaunch the browser service to "start fresh" or "clean up" once it's authenticated — this is the #1 way this setup fails. Restarting Chrome (even pointed at the same persistent profile dir, even with `storageState.json` re-injected into a brand new browser instance) frequently gets bounced straight back to the login page by bot-management JS that re-validates the session's continuity/fingerprint on next load. Session cookies and bot-manager tokens (Akamai `_abck`, etc.) are tied to the live TLS/browser-fingerprint session, not just the cookie jar.
-- If you need to do more automation after the fact, either:
-  - extend the *same* running script to do it (best — requires re-planning what the script does before first launch), or
+- For anything that comes up **later in the conversation** — a different page, a follow-up lookup, "check X again" — the preferred option is the CDP control-script pattern: see "Driving the browser again later in the conversation" below. It opens a new tab in the same authenticated context without touching the running launcher process at all.
+- The other two options from before still apply when the control-script pattern doesn't fit:
+  - extend the *same* running launcher script to do more (best when you can plan the full task before first launch), or
   - accept that you may need the user to log in again if you do have to restart, and design the next script to do everything (wait-for-login → extract data → keep alive) in one shot so you only need one login.
 - `context.storageState({ path: ... })` is still worth saving as a portable backup/audit trail even though reuse across a fresh process isn't reliable for bot-managed sites — it works fine for sites without aggressive bot management.
 
@@ -168,8 +169,32 @@ To point this at a new site, you only need to change, in `references/playwright-
 2. `LOGIN_URL_MARKER` — a substring that appears in the URL only when NOT logged in (e.g. `/account/login`, `/signin`, `/oauth/authorize`). Used by the polling loop.
 3. The content-readiness check (what string/length in `document.body.innerText` means "real content has loaded", not just the SPA shell).
 4. Whatever you want extracted (`page.evaluate(...)`) once logged in and settled.
+5. `CDP_PORT` — only if running more than one login-browser on the same sprite; otherwise leave at 9222.
 
 Everything else — Sprite setup, Chrome flags, the noVNC hand-off, the polling pattern, the "never restart mid-session" rule — is site-agnostic and should be reused as-is.
+
+## Driving the browser again later in the conversation — without restarting it
+
+Once the launcher (`playwright-template.js`) is sitting in `KEEP_ALIVE`, don't
+write a second heredoc'd script to check something else, and don't restart
+the launcher to "start fresh" — both risk exactly the bot-management
+re-validation this whole skill exists to avoid, and a heredoc rewrite also
+costs tokens for no reason once the browser is already up.
+
+Instead, use `references/login-control-template.js`: a small script that
+attaches to the *existing* browser over CDP (`chromium.connectOverCDP`),
+grabs the *existing* authenticated context (`browser.contexts()[0]` — do NOT
+create a new context here, unlike the no-login lightweight variant, since a
+fresh context has no session), opens a new tab, does one navigation +
+extraction, and closes only that tab. Write it once, then every follow-up
+lookup for the rest of the conversation is a single plain
+`Sprites:exec cmd: "node login-control-template.js <url>"` call — no heredoc,
+no risk to the live session.
+
+This mirrors the launcher/control split documented in
+`references/lightweight-no-login.md` for the no-login case; the difference
+is entirely in what the control script does with the context (reuse vs.
+create fresh) — see that file's header comment for why.
 
 ## Critical pitfalls (read before improvising)
 
