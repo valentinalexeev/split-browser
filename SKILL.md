@@ -74,6 +74,7 @@ In short, this installs:
 - Playwright's Node package + **real Google Chrome** via `npx playwright install chrome` and `sudo ... npx playwright install-deps chromium` (system libs) — **do not rely on the bundled Chromium** (`chromium.launch()` default binary); real Chrome is meaningfully less likely to be flagged as automated.
 - `sudo` works passwordless on Sprites; when a command needs a specific `PATH` under `sudo`, pass it explicitly (`sudo env PATH=... npx ...`) since `sudo`'s default `PATH` may lack `npx`.
 - **Always install with an explicit browser name (`npx playwright install chrome`), never the bare `npx playwright install`** — the bare form silently downloads Chromium, Firefox, *and* WebKit (1GB+ combined) that this skill never uses, which is one of the more common ways a small sprite's disk fills up. See `references/cleanup.sh` if it's already happened.
+- **Run the cleanup step (step 6 in `references/install-deps.sh`) immediately after install, every time, not just when disk space becomes a problem.** It drops apt's `.deb` archives and package lists, clears the npm cache, and removes any unused Chromium/Firefox/WebKit downloads — all safe before any login/profile exists. Treat this as part of installation, not a separate troubleshooting step reserved for when a sprite is already broken.
 
 ### 3. Start the display/VNC stack as services
 

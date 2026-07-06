@@ -29,6 +29,21 @@ cd /home/sprite/pw && sudo env PATH=/home/sprite/.local/bin:/.sprite/bin:/usr/lo
 sudo mkdir -p /tmp/.X11-unix
 sudo chmod 1777 /tmp/.X11-unix
 
+# 6. Clean up install leftovers immediately — don't wait for ENOSPC to hit.
+#    The Chrome + system-libs install alone is several hundred MB of .deb
+#    archives and package lists that are pure dead weight once installed.
+#    Safe to run unconditionally, even before any login/profile exists.
+sudo apt-get clean
+sudo rm -rf /var/lib/apt/lists/*
+npm cache clean --force
+# Preventive check: if a bare `npx playwright install` (no browser name) was
+# ever run instead of `npx playwright install chrome`, this removes the
+# unused Chromium/Firefox/WebKit downloads (1GB+ combined) — this skill only
+# ever launches real Chrome (channel: 'chrome').
+rm -rf ~/.cache/ms-playwright/chromium-*
+rm -rf ~/.cache/ms-playwright/firefox-*
+rm -rf ~/.cache/ms-playwright/webkit-*
+
 # --- After this, create the three display/VNC services via Sprites:service_create ---
 # (see SKILL.md step 3 for exact args — summarized here for reference)
 #
