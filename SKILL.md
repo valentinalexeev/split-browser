@@ -87,6 +87,7 @@ creating and destroying a fresh sprite per conversation.
 
 - List sprites (`Sprites:list_sprites`). If the user references "the sprite we used before" or names one, reuse it.
 - **If reusing an old sprite that has been used for lots of ad-hoc debugging, check `Sprites:service_list` first.** Old sprites accumulate zombie/auto-restarting services from previous sessions (see `references/troubleshooting.md` — this is the single biggest source of wasted time). Pay special attention to any zombie service whose command performs a real action on the target site rather than just reading local files — that's not harmless clutter, it's a live risk of repeating that action (see the hard rule above). If it looks messy (many stopped/failed services, unclear state), it is almost always faster to create a fresh sprite than to untangle it.
+- **Do this state check once per sprite, not once per step.** `list_sprites` / `service_list` are only needed here (picking/validating the sprite) and after install (confirming services came up). Once you know the sprite's state, hold onto that within the conversation rather than re-querying it before every subsequent action — repeated status checks are a common source of burning through the tool-call budget on a task that otherwise needs relatively few calls.
 - New sprite names **must start with `mcp-`** (e.g. `mcp-<purpose>-browser`).
 - `Sprites:exec` and `Sprites:service_logs` are the reliable ways to read output. `service_start`/`service_create`'s own streamed response often comes back empty even when the command worked — **always double check with `cat` over exec or `service_logs` after a short sleep**, don't trust an empty streamed response as "it did nothing."
 
@@ -108,7 +109,7 @@ See `references/troubleshooting.md` #7 for more detail.
 
 ### 2. Install the environment (once per sprite)
 
-Read `references/install-deps.sh` and run its commands via `Sprites:exec` (not as one long `&&`-chained string — `Sprites:exec`'s `cmd` is NOT shell-parsed, so pipes/redirects/`&&` don't work there; use it for single plain commands, or use `Sprites:service_create` with `cmd: "bash", args: ["-c", "<full script with quotes and heredocs>"]` for anything needing real shell syntax).
+Read `references/install-deps.sh`. **Do not run its commands one by one via separate `Sprites:exec` calls** — that burns a tool call per line. Instead, wrap the whole install sequence into a single `Sprites:service_create` call with `cmd: "bash", args: ["-c", "<full script, using && between steps, with quotes and heredocs as needed>"]` (a one-shot script launched this way is fine per the Hard Rule above, since writing/installing is idempotent — just don't re-launch it as a *second* service afterward). Follow up with one `Sprites:exec cat <logfile>` after a short sleep to confirm it finished, instead of checking after every individual step.
 
 In short, this installs:
 - `xvfb x11vnc novnc websockify` (virtual display + VNC + noVNC web client)
@@ -134,6 +135,8 @@ https://<sprite-name>-<id>.sprites.app/vnc.html?autoconnect=true&resize=scale
 
 Read `references/playwright-template.js`. Fill in the target URL and (if known) the login-redirect URL fragment used to detect "not logged in". Write it to the sprite with `Sprites:service_create` using a `bash -c "cat > file.js << 'EOF' ... EOF"` heredoc (see step 2 for why), then launch it as its own service with `DISPLAY=:99 node <file>.js`.
 
+> **Tool-call budget note:** plan the *entire* post-login sequence before writing this file, not just the login-detection part. Each time the script has to be rewritten via a fresh heredoc (because a later step was forgotten) costs a full `service_create` call plus a relaunch. Likewise, if the task involves many post-login steps on the site (several clicks/fields/pages), write that whole sequence into this one script now — inside the `safe()`-wrapped block after login — rather than planning to drive it step-by-step with separate `Sprites:exec`/CDP calls later. One well-planned script beats many small follow-up calls.
+
 **The template's structure is the load-bearing part of this whole skill:**
 - Launch via `chromium.launchPersistentContext(userDataDir, { channel: 'chrome', headless: false, ignoreDefaultArgs: ['--enable-automation'], args: [...] })` — real Chrome, automation flag stripped, `--disable-blink-features=AutomationControlled`.
 - `--no-sandbox` is required for Chrome to launch inside the sprite, but by itself makes Chrome show an "unsupported command-line flag: --no-sandbox" banner across the top of the window — pair it with `--test-type`, which suppresses that specific banner.
@@ -145,13 +148,13 @@ Read `references/playwright-template.js`. Fill in the target URL and (if known) 
 - Wrap every `page.*` call after login in a `safe()` try/catch helper so a mid-flight navigation (very common right after OAuth callbacks) never throws an uncaught exception — an uncaught exception kills the process, and Sprites services **auto-restart on crash**, which relaunches a fresh Chrome and loses the live session (see pitfall below).
 - End with `await new Promise(() => {})` to keep the browser open indefinitely for further use, rather than closing it.
 
-Give the user the noVNC link and ask them to log in. Then poll the log:
+Give the user the noVNC link and ask them to log in. Then poll the log — **but do the waiting inside a single `Sprites:exec` call, not as many separate calls with short sleeps in between.** Calling `exec` once every 2-3 seconds to `cat` the log burns a tool call per check and can easily reach 20-40 calls while waiting for a human to complete a login. Instead, use one call that loops and sleeps internally, returning as soon as the marker appears (or on timeout):
 
 ```
-Sprites:exec  cmd: "cat /.sprite/logs/services/<service-name>.log"
+Sprites:exec  cmd: "bash -c 'for i in $(seq 1 20); do grep -q LOGIN_DETECTED /.sprite/logs/services/<service-name>.log 2>/dev/null && break; pgrep -f \"node <file>.js\" >/dev/null || break; sleep 5; done; tail -c 2000 /.sprite/logs/services/<service-name>.log'"
 ```
 
-repeated with short sleeps, until you see the script's own `LOGIN_DETECTED: true` / content markers.
+This bundles ~100 seconds of waiting (20 × 5s — tune to how long login realistically takes) into one call instead of ~20-40 separate ones. The `pgrep` check is a second exit condition: if the launcher process has died (e.g. an uncaught exception, see pitfall #6), the loop breaks immediately instead of sleeping out the full timeout for nothing — check the tail output for whether it ended on the marker, a dead process, or a plain timeout, and act accordingly (marker → proceed; dead process → the service likely auto-restarted, a fresh login may be needed; timeout → call again to keep waiting). If the marker still hasn't appeared after one call, just issue the same call again rather than switching to short-interval polling.
 
 ### 5. After login: keep driving the SAME process
 
